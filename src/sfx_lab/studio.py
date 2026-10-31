@@ -336,8 +336,16 @@ class Studio:
         except ValueError as error:
             raise APIError(404, str(error)) from error
 
+        available: dict[str, dict[str, Any]] | None = None
+
         def enriched(cue: dict[str, Any]) -> dict[str, Any]:
-            takes = [self.sound(take) for take in cue["take_ids"]]
+            nonlocal available
+            if available is None:
+                available = {sound["id"]: sound for sound in self.sounds()}
+            try:
+                takes = [available[take] for take in cue["take_ids"]]
+            except KeyError as error:
+                raise APIError(404, "Sound not found.") from error
             return cue | {"takes": takes, "take": next((t for t in takes if t["id"] == cue["take_id"]), None)}
 
         if method == "GET" and section is None:
@@ -454,10 +462,30 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError(404, "Media not found.")
         self._stream(file, types[file.suffix.lower()])
 
-    def _stream(self, file: Path, mime: str) -> None:
+    def _score_export(self, path: str) -> None:
+        from .score import load_score
+        from .timeline_export import export_file
+        match = re.fullmatch(r"/api/scores/(score-[a-z0-9-]+)/export/(timeline|sounds|stem|video|fcpxml|edl|cues_json)", path)
+        if not match:
+            raise APIError(404, "Export format not found.")
+        ident, kind = match.groups()
+        try:
+            score = load_score(self.server.studio.lab, ident)
+        except ValueError as error:
+            raise APIError(404, str(error)) from error
+        if score.get("render_dirty") or score.get("state") != "rendered":
+            raise APIError(409, "Render your latest changes before exporting.")
+        file = export_file(self.server.studio.lab, score, kind)
+        types = {".xml": "application/xml", ".fcpxml": "application/xml", ".zip": "application/zip",
+                 ".wav": "audio/wav", ".mp4": "video/mp4", ".edl": "text/plain", ".json": "application/json"}
+        self._stream(file, types.get(file.suffix.lower(), "application/octet-stream"), download=True)
+
+    def _stream(self, file: Path, mime: str, download: bool = False) -> None:
         size = file.stat().st_size
         start, end, status = 0, size - 1, 200
         extra = {"Accept-Ranges": "bytes"}
+        if download:
+            extra["Content-Disposition"] = "attachment; filename*=UTF-8''" + quote(file.name, safe="")
         value = self.headers.get("Range")
         if value:
             match = re.fullmatch(r"bytes=(\d*)-(\d*)", value)
@@ -514,7 +542,10 @@ class Handler(BaseHTTPRequestHandler):
                         raise APIError(400, "Invalid JSON body.") from error
                     if not isinstance(data, dict):
                         raise APIError(400, "Expected a JSON object.")
-                self._json(200, self.server.studio.dispatch(self.command, path, data))
+                if self.command == "GET" and re.fullmatch(r"/api/scores/score-[a-z0-9-]+/export/[^/]+", path):
+                    self._score_export(path)
+                else:
+                    self._json(200, self.server.studio.dispatch(self.command, path, data))
             elif self.command == "GET" and path == "/":
                 text = read_text(ASSETS / "index.html").replace("__SFX_LAB_TOKEN__", self.server.studio.token)
                 self._send(200, text.encode(), "text/html; charset=utf-8")

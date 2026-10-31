@@ -2,7 +2,7 @@
 "use strict";
 let ALL_SOUNDS = [], SOUNDS = [], B = {}, TASTE = {}, serverState = null;
 const last = list => list[list.length - 1];
-const byId = id => SOUNDS.find(s => s.id === id);
+const byId = id => SOUNDS.find(s => s.id === id) || ALL_SOUNDS.find(s => s.id === id);
 const token = document.querySelector('meta[name="sfx-lab-token"]').content;
 async function api(path, data, method = "POST") {
   const response = await fetch(path, { method: data === undefined ? "GET" : method,
@@ -462,7 +462,72 @@ function renderInsights() {
 }
 
 /* ============ cue sheet: a scored edit, its cues on a timeline, and the takes behind each cue ============ */
-const sc = { list: [], id: null, data: null, mode: "after", cue: null, rendering: false, loading: false, built: null };
+const sc = { list: [], id: null, data: null, mode: "after", cue: null, rendering: false, loading: false, built: null, zoom: 0, largePreview: false, follow: true, scrollLeft: 0 };
+const CUE_ZOOMS = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512];
+try { sc.largePreview = localStorage.getItem("sfx-lab-large-preview") === "on"; } catch (_) {}
+const cueFPS = () => { const parts = String(sc.data?.analysis.fps || "25").split("/").map(Number); return parts[0] / (parts[1] || 1); };
+function cueFrameTime(seconds) {
+  const nominal = Math.round(cueFPS()), frame = Math.round(seconds * cueFPS());
+  const sec = Math.floor(frame / nominal);
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}:${String(frame % nominal).padStart(2, "0")}`;
+}
+function cueTimelineToolsHTML() {
+  return `<div class="cue-tools" id="cueTools">
+    <b>Timeline</b><button class="btn sm" id="cueZoomOut" aria-label="Zoom timeline out" title="Zoom out (−)">−</button>
+    <input id="cueZoom" type="range" min="0" max="9" step="1" value="${sc.zoom}" aria-label="Timeline zoom">
+    <button class="btn sm" id="cueZoomIn" aria-label="Zoom timeline in" title="Zoom in (+)">+</button>
+    <output id="cueZoomLabel">${CUE_ZOOMS[sc.zoom]}×</output><button class="btn sm" id="cueZoomFit">Fit</button>
+    <button class="btn sm" id="cuePlayhead">Go to playhead</button>
+    <label class="cue-follow"><input type="checkbox" id="cueFollow" ${sc.follow ? "checked" : ""}> Follow</label>
+    <span class="grow"></span><button class="btn sm" id="cuePrevFrame" aria-label="Previous frame" title="Previous frame (←)">‹</button>
+    <output class="cue-time" id="cueFrameTime">0:00:00</output>
+    <button class="btn sm" id="cueNextFrame" aria-label="Next frame" title="Next frame (→)">›</button>
+  </div>`;
+}
+function cueRulerHTML() {
+  const track = $("#cueTrack"), dur = sc.data.analysis.duration || 1, zoom = CUE_ZOOMS[sc.zoom];
+  const width = track?.clientWidth || 900, visible = dur / zoom, frame = 1 / cueFPS();
+  const steps = [...new Set([frame, frame * 2, frame * 5, frame * 10, .5, 1, 2, 5, 10, 15, 30, 60, 120, 300])].sort((a,b) => a-b);
+  const step = steps.find(x => x >= visible / Math.max(1, width / 76)) || 300;
+  const left = (track?.scrollLeft || 0) / (width * zoom) * dur;
+  const first = Math.max(0, Math.floor(left / step) - 1), last = Math.min(Math.ceil(dur / step), Math.ceil((left + visible) / step) + 1);
+  const labels = [];
+  for (let i = first; i <= last; i++) {
+    const t = i * step; if (t > dur) break;
+    labels.push(`<span style="left:${t / dur * 100}%">${step < 1 ? cueFrameTime(t) : tc(t).replace(/\.00$/, "")}</span>`);
+  }
+  return labels.join("");
+}
+function updateCueRuler() { const ruler = $("#cueRuler"); if (ruler && sc.data) ruler.innerHTML = cueRulerHTML(); }
+function revealCueTime(seconds, center = false) {
+  const track = $("#cueTrack"); if (!track || !sc.data) return;
+  const x = seconds / sc.data.analysis.duration * track.clientWidth * CUE_ZOOMS[sc.zoom];
+  if (center || x < track.scrollLeft + 12 || x > track.scrollLeft + track.clientWidth - 32)
+    track.scrollLeft = Math.max(0, x - track.clientWidth * (center ? .5 : .2));
+  sc.scrollLeft = track.scrollLeft; updateCueRuler();
+}
+function setCueZoom(index, pointerX = null) {
+  const track = $("#cueTrack"), inner = $("#cueInner"); if (!track || !inner || !sc.data) return;
+  const next = Math.max(0, Math.min(CUE_ZOOMS.length - 1, Math.round(index)));
+  const old = CUE_ZOOMS[sc.zoom], width = track.clientWidth, time = $("#cueVideo")?.currentTime || 0;
+  const x = time / sc.data.analysis.duration * width * old - track.scrollLeft;
+  const point = pointerX ?? (x >= 0 && x <= width ? x : width / 2);
+  const fraction = (track.scrollLeft + point) / (width * old);
+  sc.zoom = next; inner.style.width = `${CUE_ZOOMS[next] * 100}%`;
+  track.scrollLeft = next === 0 ? 0 : fraction * width * CUE_ZOOMS[next] - point;
+  sc.scrollLeft = track.scrollLeft; syncCueTools(); updateCueRuler(); syncCueHead();
+}
+function syncCueTools() {
+  const slider = $("#cueZoom"); if (!slider) return;
+  slider.value = sc.zoom; slider.setAttribute("aria-valuetext", `${CUE_ZOOMS[sc.zoom]} times, ${(sc.data.analysis.duration / CUE_ZOOMS[sc.zoom]).toFixed(2)} seconds visible`);
+  $("#cueZoomLabel").textContent = `${CUE_ZOOMS[sc.zoom]}×`;
+  $("#cueZoomOut").disabled = sc.zoom === 0; $("#cueZoomIn").disabled = sc.zoom === CUE_ZOOMS.length - 1;
+}
+function stepCueFrame(direction) {
+  const v = $("#cueVideo"); if (!v || !sc.data) return;
+  const fps = cueFPS(), frame = Math.round(v.currentTime * fps) + direction;
+  seekCue(Math.min((Math.ceil(sc.data.analysis.duration * fps) - 1) / fps, Math.max(0, frame / fps)));
+}
 const EVENT_LABEL = { "cut": "Cut", "whoosh-in": "Whoosh", "impact": "Impact", "ui-pop": "UI pop", "riser": "Riser", "ambience-bed": "Bed", "voice-line": "Voice" };
 const BEDS = ["ambience-bed", "voice-line"];
 const evLabel = c => EVENT_LABEL[c.event_type] || c.event_type;
@@ -495,6 +560,8 @@ function cueBarHTML() {
   return `<div class="toolbar" id="cueBar">
     ${sc.list.length > 1 ? `<div class="select"><select id="cueScore" aria-label="Scored edit">${sc.list.slice().reverse().map(s => `<option value="${esc(s.id)}" ${s.id === d.id ? "selected" : ""}>${esc(s.name)} · ${s.created.slice(5, 10).replace("-", "/")}</option>`).join("")}</select>${I.chev}</div>` : `<b>${esc(d.name)}</b>`}
     <div class="seg"><button data-cmode="before" class="${sc.mode === "before" || !d.media?.video ? "on" : ""}">Before</button><button data-cmode="after" class="${sc.mode === "after" && d.media?.video ? "on" : ""}" ${d.media?.video ? "" : 'disabled title="Render the scored edit first"'}>After</button></div>
+    <button class="btn sm" id="cueLargePreview" aria-pressed="${sc.largePreview}">${sc.largePreview ? "Normal preview" : "Larger preview"}</button>
+    <button class="btn sm primary" id="cueExportBtn">Export</button>
     <span class="cue-time" id="cueTime">0:00.00 / ${tc(d.analysis.duration)}</span>
     <span class="grow"></span><span class="count">${cues.length} cues · ${rated} rated</span>
     ${status ? `<span class="state">${status}</span>` : ""}
@@ -504,16 +571,14 @@ function cueBarHTML() {
 }
 function cueTrackHTML() {
   const d = sc.data, dur = d.analysis.duration || 1;
-  const step = [0.5, 1, 2, 5, 10, 15, 30, 60, 120].find(s => dur / s <= 12) || 300;
-  const ticks = Array.from({ length: Math.floor(dur / step) + 1 }, (_, i) => i * step);
   const chip = c => {
     const s = byId(c.take_id)?.rating || 0, need = !c.take_id;
     return `<button class="cue-chip${need ? " need" : ""}${c.id === sc.cue ? " sel" : ""}" data-cue="${c.id}" style="left:${c.start / dur * 100}%;width:${Math.max(0, c.end - c.start) / dur * 100}%;background:${ratingColor(s)};color:${s ? "#0b0d10" : "var(--fg)"}" title="${tc(c.start)} · ${esc(evLabel(c))} · ${esc(c.prompt)}" aria-label="${esc(evLabel(c))} at ${tc(c.start)}">${esc(evLabel(c))}</button>`;
   };
   const hits = d.cues.filter(c => !BEDS.includes(c.event_type)), beds = d.cues.filter(c => BEDS.includes(c.event_type));
-  return `<div class="cue-inner" id="cueInner"><div class="cue-ruler">${ticks.map(t => `<span style="left:${t / dur * 100}%">${t >= 60 ? tc(t).replace(/\.00$/, "") : t + "s"}</span>`).join("")}</div>
-    <div class="cue-lane"><span class="lane-l">Hits</span>${hits.map(chip).join("")}</div>
-    ${beds.length ? `<div class="cue-lane"><span class="lane-l">Beds</span>${beds.map(chip).join("")}</div>` : ""}
+  return `<div class="cue-inner" id="cueInner" style="width:${CUE_ZOOMS[sc.zoom] * 100}%"><div class="cue-ruler" id="cueRuler" aria-hidden="true"></div>
+    <div class="cue-lane">${hits.map(chip).join("")}</div>
+    ${beds.length ? `<div class="cue-lane">${beds.map(chip).join("")}</div>` : ""}
     <div class="cue-head" id="cueHead" style="left:0"></div></div>`;
 }
 function cueListHTML() {
@@ -531,8 +596,10 @@ function syncCueHead() {
   const dur = sc.data.analysis.duration || v.duration || 1;
   head.style.left = Math.min(100, v.currentTime / dur * 100) + "%";
   $("#cueTime").textContent = `${tc(v.currentTime)} / ${tc(sc.data.analysis.duration)}`;
+  if ($("#cueFrameTime")) $("#cueFrameTime").textContent = cueFrameTime(v.currentTime);
+  if (sc.follow && !v.paused) revealCueTime(v.currentTime);
 }
-function seekCue(seconds) { const v = $("#cueVideo"); if (v) { v.currentTime = Math.max(0, seconds); syncCueHead(); } }
+function seekCue(seconds) { const v = $("#cueVideo"); if (v) { v.currentTime = Math.max(0, seconds); revealCueTime(v.currentTime); syncCueHead(); } }
 function renderCues() {
   const d = sc.data;
   if (!d) {
@@ -545,7 +612,7 @@ function renderCues() {
   // Rebuild the video only when the edit or its version changes, so refreshes never interrupt playback.
   if (sc.built !== key || !$("#cueTrack")) {
     $("#view").innerHTML = cueBarHTML() + `<div class="cue-stage">${src ? `<video id="cueVideo" src="${src}#t=0.001" controls playsinline preload="metadata"></video>` : `<div class="empty">The edit's video is missing.</div>`}</div>
-      <div class="cue-track" id="cueTrack" aria-label="Cue timeline">${cueTrackHTML()}</div><div class="scroll" id="cueList">${cueListHTML()}</div>`;
+      <div class="cue-timeline">${cueTimelineToolsHTML()}<div class="cue-track-wrap"><div class="cue-lane-labels" aria-hidden="true"><span>Hits</span><span>Beds</span></div><div class="cue-track" id="cueTrack" aria-label="Cue timeline" tabindex="0">${cueTrackHTML()}</div></div></div><div class="scroll" id="cueList">${cueListHTML()}</div>`;
     sc.built = key;
     const v = $("#cueVideo");
     if (v) {
@@ -554,6 +621,11 @@ function renderCues() {
       v.addEventListener("play", () => { media.pause(); cancelAnimationFrame(raf); tick(); });
       v.addEventListener("timeupdate", syncCueHead); v.addEventListener("seeked", syncCueHead);
     }
+    $("#cueTrack").addEventListener("scroll", e => { sc.scrollLeft = e.currentTarget.scrollLeft; updateCueRuler(); }, { passive: true });
+    $("#cueTrack").addEventListener("wheel", e => {
+      if (!(e.ctrlKey || e.metaKey) || !e.deltaY) return;
+      e.preventDefault(); setCueZoom(sc.zoom + (e.deltaY < 0 ? 1 : -1), e.clientX - e.currentTarget.getBoundingClientRect().left);
+    }, { passive: false });
     $("#cueTrack").addEventListener("pointerdown", e => {
       if (e.target.closest("[data-cue]")) return;
       const r = $("#cueInner").getBoundingClientRect();
@@ -561,10 +633,12 @@ function renderCues() {
     });
   } else {
     $("#cueBar").outerHTML = cueBarHTML();
+    const scroll = $("#cueTrack").scrollLeft;
     $("#cueTrack").innerHTML = cueTrackHTML();
+    $("#cueTrack").scrollLeft = scroll;
     const list = $("#cueList"), top = list.scrollTop; list.innerHTML = cueListHTML(); list.scrollTop = top;
   }
-  syncCueHead();
+  syncCueTools(); updateCueRuler(); syncCueHead();
 }
 function selectCue(id, seek) {
   const c = cueById(id); if (!c) return;
@@ -639,6 +713,38 @@ async function renderScore() {
   } catch (e) { toast(e.message); }
   finally { sc.rendering = false; renderAll(); }
 }
+function openCueExport() {
+  if (!sc.data) return;
+  const dirty = sc.data.render_dirty || sc.data.state !== "rendered";
+  const individual = sc.data.cues.every(c => c.processed_audio);
+  $("#overlay").innerHTML = `<div class="scrim" data-close></div><div class="modal" role="dialog" aria-modal="true" aria-label="Export edit" style="width:min(480px,calc(100% - 32px))">
+    <div class="m-h"><h2>Export edit</h2><button class="icon-btn" data-close aria-label="Close export">${I.x}</button></div>
+    <div class="m-b export-options"><p>${dirty ? "Render your latest changes before exporting." : "Download a timeline file, then import it into your editor. Your video and sounds are already linked."}</p>
+      <button class="btn primary" data-cue-export="timeline" ${dirty ? "disabled" : ""}>Timeline · Premiere / Resolve (.xml)</button>
+      <span class="muted">${individual ? "Separate sound clips, placed at their exact frames." : "Your picture and the finished stereo sound mix."}</span>
+      <button class="btn" data-cue-export="fcpxml" ${dirty ? "disabled" : ""}>Timeline · Final Cut Pro (.fcpxml)</button>
+      <button class="btn" data-cue-export="stem" ${dirty ? "disabled" : ""}>Sound mix only (.wav)</button>
+      <button class="btn" data-cue-export="sounds" ${dirty ? "disabled" : ""}>Sounds + timing (.zip)</button>
+      <button class="btn" data-cue-export="video" ${dirty ? "disabled" : ""}>Video with sound (.mp4)</button>
+      <p class="muted">Timeline files link to your SFX library on this computer. Keep the library in place.</p>
+      <div class="muted" id="cueExportStatus" role="status"></div>
+    </div></div>`;
+  $("#overlay [data-cue-export]")?.focus();
+}
+async function downloadCueExport(kind, button) {
+  const status = $("#cueExportStatus"), label = button.textContent;
+  button.disabled = true; button.textContent = "Preparing…"; if (status) status.textContent = "Preparing your download…";
+  try {
+    const response = await fetch(`/api/scores/${encodeURIComponent(sc.id)}/export/${encodeURIComponent(kind)}`, {headers:{"X-SFX-Lab-Token":token}});
+    if (!response.ok) { const error = await response.json(); throw new Error(error.error || "Export failed."); }
+    const blob = await response.blob(), href = URL.createObjectURL(blob);
+    const name = response.headers.get("Content-Disposition")?.match(/filename\*=UTF-8''(.+)$/)?.[1];
+    const link = document.createElement("a"); link.href = href; link.download = name ? decodeURIComponent(name) : "SFX export";
+    document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(href), 60000);
+    if (status) status.textContent = "Downloaded. Import the timeline file into your editor.";
+  } catch (error) { if (status) status.textContent = error.message; }
+  finally { button.disabled = false; button.textContent = label; }
+}
 media.addEventListener("play", () => $("#cueVideo")?.pause());
 
 /* ============ inspector ============ */
@@ -677,6 +783,9 @@ function renderUpdate() {
   $("#updateBtn").disabled = learning;
 }
 function renderView() {
+  $("#app").classList.toggle("cue-focus", st.view === "cues" && sc.largePreview);
+  $("#main").classList.toggle("cue-focus", st.view === "cues" && sc.largePreview);
+  $("#view").classList.toggle("is-cues", st.view === "cues");
   document.querySelectorAll("#views button").forEach(b => (b.classList.toggle("on", b.dataset.view === st.view), b.setAttribute("aria-selected", b.dataset.view === st.view)));
   ({ library: renderLibrary, map: renderMap, compare: renderCompare, cues: renderCues, insights: renderInsights })[st.view]();
 }
@@ -873,6 +982,7 @@ document.addEventListener("click", e => {
   if (d.play) { e.stopPropagation(); return play(d.play); }
   if (d.cue) return selectCue(d.cue, true);
   if (d.cueRow && !e.target.closest("[data-rate]")) return selectCue(d.cueRow, true);
+  if (d.cueExport) return downloadCueExport(d.cueExport, t);
   if (d.cmode) { sc.mode = d.cmode; return renderView(); }
   if (d.swap) return swapCue(d.swap);
   if (d.playCanvas) return play(d.playCanvas);
@@ -909,6 +1019,14 @@ document.addEventListener("click", e => {
     case "tasteSide": st.view = "insights"; $("#app").classList.remove("side-open"); return renderAll();
     case "updateBtn": return updateTaste();
     case "revealBtn": return api("/api/reveal", {id:st.sel}).catch(e => toast(e.message));
+    case "cueLargePreview": sc.largePreview = !sc.largePreview; try { localStorage.setItem("sfx-lab-large-preview", sc.largePreview ? "on" : "off"); } catch (_) {} renderView(); return;
+    case "cueZoomIn": return setCueZoom(sc.zoom + 1);
+    case "cueZoomOut": return setCueZoom(sc.zoom - 1);
+    case "cueZoomFit": return setCueZoom(0);
+    case "cuePlayhead": return revealCueTime($("#cueVideo")?.currentTime || 0, true);
+    case "cuePrevFrame": return stepCueFrame(-1);
+    case "cueNextFrame": return stepCueFrame(1);
+    case "cueExportBtn": return openCueExport();
     case "renderBtn": return renderScore();
     case "seekCueBtn": { const c = cueById(sc.cue); if (c) seekCue(c.start); return; }
     case "swapNextBtn": return swapStep("next");
@@ -921,6 +1039,7 @@ document.addEventListener("dblclick", e => { const r = e.target.closest("[data-i
 document.addEventListener("mouseover", e => { const b = e.target.closest("[data-rate]"); if (b) b.parentElement.querySelectorAll("button").forEach(x => x.classList.toggle("f", +x.dataset.v <= +b.dataset.v)); });
 document.addEventListener("mouseout", e => { const b = e.target.closest("[data-rate]"); if (!b || b.parentElement.contains(e.relatedTarget)) return; const s = byId(b.dataset.rate); b.parentElement.querySelectorAll("button").forEach(x => x.classList.toggle("f", +x.dataset.v <= s.rating)); });
 document.addEventListener("input", e => {
+  if (e.target.id === "cueZoom") return setCueZoom(+e.target.value);
   if (e.target.id === "q") { st.q = e.target.value; if (st.view !== "library") st.view = "library"; renderView(); }
   if (e.target.id === "note") {
     const s = byId(st.sel); if (s.savedNote == null) s.savedNote = s.note; s.note = e.target.value;
@@ -931,6 +1050,7 @@ document.addEventListener("input", e => {
 });
 document.addEventListener("focusout", e => { if (e.target.id === "note") flushNote(); if (e.target.id === "tasteNotes") saveTasteNotes(); });
 document.addEventListener("change", e => {
+  if (e.target.id === "cueFollow") sc.follow = e.target.checked;
   if (e.target.id === "projectSelect") switchProject(e.target.value).catch(e => toast(e.message));
   if (e.target.id === "levelMatch") {
     levelMatch = e.target.checked;
@@ -961,6 +1081,10 @@ document.addEventListener("keydown", e => {
   if (e.key === "Enter" && e.target.matches("[data-id]")) { e.preventDefault(); return select(e.target.dataset.id); }
   const k = e.key;
   if (st.view === "cues" && sc.data) {
+    if (k === "+" || k === "=") { e.preventDefault(); return setCueZoom(sc.zoom + 1); }
+    if (k === "-") { e.preventDefault(); return setCueZoom(sc.zoom - 1); }
+    if (k === "f" || k === "F") { e.preventDefault(); return setCueZoom(0); }
+    if (k === "ArrowLeft" || k === "ArrowRight") { e.preventDefault(); return stepCueFrame(k === "ArrowRight" ? 1 : -1); }
     // In the cue sheet, Space plays the edit and the arrows step through cues; 1 to 5 still rate the selected take.
     if (e.key === "Enter" && e.target.matches("[data-cue-row]")) { e.preventDefault(); return selectCue(e.target.dataset.cueRow, true); }
     if (e.code === "KeyS" && sc.cue) { e.preventDefault(); if (!e.repeat) swapStep(e.shiftKey ? "back" : "next"); return; }
