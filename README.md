@@ -291,3 +291,32 @@ uv pip install -p .venv/bin/python -e ".[dev]"
 ```
 
 MIT licensed. Studio runs locally only; it does not install a background daemon.
+
+## Preview, timeline zoom and export
+
+In **Cue sheet**, the larger video preview keeps the film in view above the
+sound timeline. **Larger preview** hides the side panels and cue list, keeping the timeline
+visible while the film expands;
+**Normal preview** restores the panels.
+
+Use the timeline's **+ / −** buttons or slider to zoom from the whole edit to
+individual frames (up to 512×). Scroll sideways to move through the edit.
+**Fit** shows everything again; **Go to playhead** centers the current frame.
+**Follow** keeps the playing frame visible. The arrow buttons step one frame
+at a time. Keyboard shortcuts: `+` / `−` to zoom, `F` to fit, and left/right
+arrows to step a frame. Zoom and layout changes do not reload the video.
+
+Click **Export**, then choose:
+
+- **Timeline · Premiere / Resolve (.xml)**: import the file into your editor.
+  It includes the picture and linked stereo audio at the correct frames, with
+  original picture audio omitted. Scores with baked per-cue WAV files export
+  separate effects on non-overlapping stereo tracks. Other scores use the
+  finished SFX mix so their timing, loops and levels stay intact.
+- **Timeline · Final Cut Pro (.fcpxml)**: the existing Final Cut timeline.
+- **Sound mix only (.wav)**, **Sounds + timing (.zip)**, or **Video with sound**.
+
+Timeline files link to your existing library on this computer. Keep the library
+in place. The ZIP contains sound backups and frame timings; it does not include
+the source video. Render any pending swaps before exporting. Export never makes
+new sounds or calls a paid service.

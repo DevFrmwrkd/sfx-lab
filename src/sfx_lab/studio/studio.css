@@ -379,3 +379,42 @@ button:disabled { cursor: default; opacity: .5; }
   .cue-cols .c-ev, .cue-cols .c-tk { display: none; }
   .cue-stage video { max-height: 32vh; }
 }
+
+/* Spacious preview and a horizontally scrollable, frame-scale cue timeline. */
+.view.is-cues .cue-stage { height: max(160px, min(56vh, calc(100dvh - 440px))); padding: 8px; min-height: 0; grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
+.view.is-cues .cue-stage video { width: 100%; height: 100%; min-width: 0; min-height: 0; max-width: 100%; max-height: none; aspect-ratio: auto; object-fit: contain; }
+.app.cue-focus { grid-template-columns: 0 minmax(0, 1fr); }
+.app.cue-focus > .side { display: none; }
+.main.cue-focus, .main.cue-focus.no-insp { grid-template-columns: minmax(0, 1fr); }
+.main.cue-focus > .insp { display: none !important; }
+.main.cue-focus .cue-stage { height: auto; flex: 1 1 0; min-height: 160px; }
+.main.cue-focus #cueList { display: none; }
+.cue-timeline { flex: none; min-width: 0; border-bottom: 1px solid var(--line-soft); }
+.cue-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 8px 14px; }
+.cue-tools b { margin-right: 3px; font-size: 12px; font-weight: 500; color: var(--muted); }
+.cue-tools input[type="range"] { width: 110px; min-width: 70px; accent-color: var(--accent); }
+.cue-tools output { min-width: 34px; font: 11px var(--mono); text-align: center; }
+.cue-tools .grow { flex: 1; }
+.cue-follow { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.cue-follow input { accent-color: var(--accent); }
+.cue-track-wrap { display: grid; grid-template-columns: 40px minmax(0, 1fr); margin: 0 14px; }
+.cue-lane-labels { padding-top: 28px; display: flex; flex-direction: column; gap: 6px; }
+.cue-lane-labels span { height: 36px; display: flex; align-items: center; font: 500 9px var(--mono); text-transform: uppercase; color: var(--faint); }
+.cue-track { min-width: 0; overflow-x: auto; overflow-y: hidden; margin: 0; padding: 0 0 10px; scrollbar-color: var(--faint) var(--panel); scrollbar-width: thin; }
+.cue-inner { padding-top: 28px; min-width: 100%; }
+.cue-ruler { height: 28px; overflow: hidden; }
+.cue-ruler span { top: 8px; }
+.cue-lane { height: 36px; }
+.cue-chip { min-width: 1px; padding: 0 3px; line-height: 28px; }
+.cue-head { top: 20px; }
+@media (max-width: 700px) {
+  .cue-tools { gap: 5px; padding: 7px 10px; }
+  .cue-tools input[type="range"] { width: 80px; }
+  .cue-tools .grow { flex-basis: 100%; height: 0; }
+  .view.is-cues .cue-stage { height: max(150px, min(48vh, calc(100dvh - 450px))); }
+}
+
+.export-options { display: grid; gap: 10px; }
+.export-options p { margin: 0 0 5px; line-height: 1.5; }
+.export-options .btn { justify-content: center; min-height: 36px; }
+button:disabled { opacity: .45; cursor: default; }
